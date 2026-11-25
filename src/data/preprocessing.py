@@ -1,11 +1,8 @@
 """
 src/data/preprocessing.py
 --------------------------
-Cleans and preprocesses the bot detection dataset.
-
-Dataset columns (bot_detection_data.csv):
-  User ID, Username, Tweet, Retweet Count, Mention Count,
-  Follower Count, Verified, Bot Label, Location, Created At, Hashtags
+Cleans and preprocesses Twitter bot datasets.
+Primary dataset: twitter_human_bots_dataset.csv
 """
 
 import pandas as pd
@@ -13,107 +10,144 @@ import numpy as np
 import re
 
 
-# ─── Text cleaning ───────────────────────────────────────────────────────────
-
-def clean_tweet(text: str) -> str:
-    """Remove URLs, mentions, hashtag symbols and extra whitespace from a tweet."""
+def clean_text(text: str) -> str:
+    """Clean text by removing URLs, mentions, punctuation, and extra whitespace."""
     if not isinstance(text, str):
         return ""
-    text = re.sub(r"http\S+|www\S+", "", text)       # remove URLs
-    text = re.sub(r"@\w+", "", text)                  # remove @mentions
-    text = re.sub(r"#", "", text)                     # remove # symbol (keep word)
-    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)      # keep alphanumeric
-    text = re.sub(r"\s+", " ", text).strip()
-    return text.lower()
+    text = re.sub(r"http\S+|www\S+", "", text)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
-# ─── Feature engineering ─────────────────────────────────────────────────────
-
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def engineer_account_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add derived features from existing columns.
-
-    New columns added:
-      - tweet_length     : character count of the cleaned tweet
-      - word_count       : word count of the cleaned tweet
-      - hashtag_count    : number of hashtags in the Hashtags column
-      - has_hashtag      : binary flag (1 if at least one hashtag)
-      - verified_int     : Verified boolean cast to int (0/1)
-      - hour_of_day      : hour extracted from Created At
-      - day_of_week      : day of week (0=Monday … 6=Sunday) from Created At
+    Engineer behavioral, temporal, and metadata features from Twitter accounts.
     """
     df = df.copy()
 
-    # Clean tweet text
-    df["tweet_clean"] = df["Tweet"].apply(clean_tweet)
-    df["tweet_length"] = df["tweet_clean"].apply(len)
-    df["word_count"] = df["tweet_clean"].apply(lambda x: len(x.split()))
+    # Target label mapping (0 = human, 1 = bot)
+    if "account_type" in df.columns:
+        df["bot_label"] = (df["account_type"].astype(str).str.lower() == "bot").astype(int)
+    elif "Bot Label" in df.columns:
+        df["bot_label"] = df["Bot Label"].astype(int)
+    elif "bot" in df.columns:
+        df["bot_label"] = df["bot"].astype(int)
 
-    # Hashtags
-    df["Hashtags"] = df["Hashtags"].fillna("")
-    df["hashtag_count"] = df["Hashtags"].apply(
-        lambda x: len(x.split()) if x.strip() else 0
-    )
-    df["has_hashtag"] = (df["hashtag_count"] > 0).astype(int)
+    # Boolean flags
+    for col in ["default_profile", "default_profile_image", "geo_enabled", "verified", "Verified"]:
+        if col in df.columns:
+            target_name = col.lower()
+            df[target_name] = df[col].astype(bool).astype(int)
 
-    # Verified
-    df["verified_int"] = df["Verified"].astype(int)
+    # Numeric counts with log1p scaling to handle heavy tails
+    for col in ["followers_count", "Follower Count"]:
+        if col in df.columns:
+            val = pd.to_numeric(df[col], errors="coerce").fillna(0).clip(lower=0)
+            df["log_followers"] = np.log1p(val)
 
-    # Temporal features from Created At
-    df["created_at_dt"] = pd.to_datetime(df["Created At"], errors="coerce")
-    df["hour_of_day"] = df["created_at_dt"].dt.hour.fillna(-1).astype(int)
-    df["day_of_week"] = df["created_at_dt"].dt.dayofweek.fillna(-1).astype(int)
+    for col in ["friends_count", "Mention Count"]:
+        if col in df.columns:
+            val = pd.to_numeric(df[col], errors="coerce").fillna(0).clip(lower=0)
+            df["log_friends"] = np.log1p(val)
+
+    for col in ["statuses_count", "Retweet Count"]:
+        if col in df.columns:
+            val = pd.to_numeric(df[col], errors="coerce").fillna(0).clip(lower=0)
+            df["log_statuses"] = np.log1p(val)
+
+    if "favourites_count" in df.columns:
+        val = pd.to_numeric(df["favourites_count"], errors="coerce").fillna(0).clip(lower=0)
+        df["log_favourites"] = np.log1p(val)
+    else:
+        df["log_favourites"] = 0.0
+
+    # Temporal & activity rate features
+    time_col = "created_at" if "created_at" in df.columns else ("Created At" if "Created At" in df.columns else None)
+    if time_col:
+        dt = pd.to_datetime(df[time_col], errors="coerce")
+        df["hour_of_day"] = dt.dt.hour.fillna(-1).astype(int)
+        df["day_of_week"] = dt.dt.dayofweek.fillna(-1).astype(int)
+        df["year"] = dt.dt.year.fillna(2015).astype(int)
+        df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
+        df["is_night"] = ((df["hour_of_day"] >= 22) | (df["hour_of_day"] <= 6)).astype(int)
+    else:
+        df["hour_of_day"] = -1
+        df["day_of_week"] = -1
+        df["year"] = 2015
+        df["is_weekend"] = 0
+        df["is_night"] = 0
+
+    if "account_age_days" in df.columns:
+        df["account_age_days"] = pd.to_numeric(df["account_age_days"], errors="coerce").fillna(0)
+    else:
+        df["account_age_days"] = 0.0
+
+    if "average_tweets_per_day" in df.columns:
+        df["log_tweets_per_day"] = np.log1p(pd.to_numeric(df["average_tweets_per_day"], errors="coerce").fillna(0).clip(lower=0))
+    else:
+        df["log_tweets_per_day"] = 0.0
+
+    # Profile metadata & text signals
+    if "description" in df.columns:
+        df["desc_len"] = df["description"].fillna("").apply(len)
+        df["has_desc"] = (df["desc_len"] > 0).astype(int)
+    else:
+        df["desc_len"] = 0
+        df["has_desc"] = 0
+
+    name_col = "screen_name" if "screen_name" in df.columns else ("Username" if "Username" in df.columns else None)
+    if name_col:
+        df["digits_in_name"] = df[name_col].fillna("").apply(lambda s: sum(c.isdigit() for c in str(s)))
+        df["name_len"] = df[name_col].fillna("").apply(lambda s: len(str(s)))
+    else:
+        df["digits_in_name"] = 0
+        df["name_len"] = 0
+
+    # Fallback default flags if not present
+    for req in ["default_profile", "default_profile_image", "geo_enabled", "verified"]:
+        if req not in df.columns:
+            df[req] = 0
 
     return df
 
 
-# ─── Full preprocessing pipeline ─────────────────────────────────────────────
+ACCOUNT_FEATURES = [
+    "log_followers",
+    "log_friends",
+    "log_statuses",
+    "log_favourites",
+    "log_tweets_per_day",
+    "account_age_days",
+    "default_profile",
+    "default_profile_image",
+    "geo_enabled",
+    "verified",
+    "hour_of_day",
+    "day_of_week",
+    "year",
+    "desc_len",
+    "digits_in_name",
+]
+
 
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Full preprocessing pipeline for the bot detection dataset.
-
-    1. Drop duplicate rows.
-    2. Drop rows with missing Bot Label.
-    3. Engineer all derived features.
-
-    Returns the cleaned, feature-enriched DataFrame.
+    Full preprocessing pipeline for Twitter bot detection dataset.
     """
-    initial = len(df)
-
+    initial_len = len(df)
     df = df.drop_duplicates()
-    df = df.dropna(subset=["Bot Label"])
-    df = engineer_features(df)
-
-    print(f"[preprocessing] Rows kept: {len(df):,} / {initial:,}")
+    df = engineer_account_features(df)
+    if "bot_label" in df.columns:
+        df = df.dropna(subset=["bot_label"])
+    print(f"[preprocessing] Processed {len(df):,} / {initial_len:,} rows.")
     return df
-
-
-# ─── Feature matrix & labels ─────────────────────────────────────────────────
-
-BEHAVIORAL_FEATURES = [
-    "Retweet Count",
-    "Mention Count",
-    "Follower Count",
-    "verified_int",
-    "tweet_length",
-    "word_count",
-    "hashtag_count",
-    "has_hashtag",
-    "hour_of_day",
-    "day_of_week",
-]
 
 
 def get_features_and_labels(df: pd.DataFrame):
     """
-    Extract the feature matrix X and label vector y.
-
-    Returns
-    -------
-    X : pd.DataFrame  — shape (n_samples, n_features)
-    y : pd.Series     — 0 = human, 1 = bot
+    Extract feature matrix X and target y.
     """
-    X = df[BEHAVIORAL_FEATURES].copy()
-    y = df["Bot Label"].astype(int)
+    X = df[ACCOUNT_FEATURES].copy().fillna(0)
+    y = df["bot_label"].astype(int) if "bot_label" in df.columns else None
     return X, y
