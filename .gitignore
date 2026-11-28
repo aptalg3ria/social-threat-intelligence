@@ -1,22 +1,46 @@
-
-# Python cache
+# Python cache & build artifacts
 __pycache__/
 *.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
 
 # Virtual environments
 venv/
 env/
+.venv/
+ENV/
+
+# Local environment variables & secrets
+.env
+.env.*
+!.env.example
 
 # Jupyter
 .ipynb_checkpoints/
 
-# Dataset files
-Data/raw/
-Data/processed/
-Data/samples/
+# Dataset files (large / external / generated datasets excluded from Git; anchored to root so src/data/ is tracked)
+/Data/raw/
+/Data/processed/
+/Data/samples/
+/data/
 *.csv
+!docs/meta_annotation_template.csv
 
-# Temporary files
+# Temporary files & local logs
 *.log
+*.tmp
+*.bak
+logs/
+
+# OS & IDE files
 .DS_Store
+Thumbs.db
 .vscode/
+.idea/
+*.swp
+*.swo

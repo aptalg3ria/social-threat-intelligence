@@ -34,11 +34,11 @@ def engineer_account_features(df: pd.DataFrame) -> pd.DataFrame:
     elif "bot" in df.columns:
         df["bot_label"] = df["bot"].astype(int)
 
-    # Boolean flags
+    # Boolean flags (treat NaN/None as False rather than True)
     for col in ["default_profile", "default_profile_image", "geo_enabled", "verified", "Verified"]:
         if col in df.columns:
             target_name = col.lower()
-            df[target_name] = df[col].astype(bool).astype(int)
+            df[target_name] = (df[col].notna() & df[col].astype(bool)).astype(int)
 
     # Numeric counts with log1p scaling to handle heavy tails
     for col in ["followers_count", "Follower Count"]:
@@ -67,7 +67,7 @@ def engineer_account_features(df: pd.DataFrame) -> pd.DataFrame:
     if time_col:
         dt = pd.to_datetime(df[time_col], errors="coerce")
         df["hour_of_day"] = dt.dt.hour.fillna(-1).astype(int)
-        df["day_of_week"] = dt.dt.dayofweek.fillna(-1).astype(int)
+        df["day_of_week"] = dt.dt.day_of_week.fillna(-1).astype(int)
         df["year"] = dt.dt.year.fillna(2015).astype(int)
         df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
         df["is_night"] = ((df["hour_of_day"] >= 22) | (df["hour_of_day"] <= 6)).astype(int)
