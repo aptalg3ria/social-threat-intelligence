@@ -209,10 +209,6 @@ social-threat-intelligence/
 ├── app/
 │   └── streamlit_app.py
 │
-├── Data/
-│   └── processed/
-│       └── meta_dataset_synthetic.csv
-│
 ├── models/
 │   ├── saved/
 │   │   ├── fake_news_model.joblib
