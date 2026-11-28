@@ -36,7 +36,9 @@ from src.data.synthetic_meta_dataset import (
     TARGET_LABEL_COUNTS,
     assign_synthetic_moderation_label,
     generate_synthetic_meta_dataset,
+    save_synthetic_meta_dataset,
 )
+from src.utils.helpers import resolve_project_path
 from src.evaluation.compare_models import (
     compare_rule_vs_logreg,
     evaluate_meta_classifier,
@@ -490,10 +492,13 @@ class TestSyntheticMetaDatasetAndTraining:
             validate_meta_features_dataset(tampered, require_labels=True, require_human_annotated=True)
 
     def test_saved_synthetic_dataset_and_three_way_training_load(self, tmp_path):
-        assert os.path.exists(SYNTHETIC_DATASET_DEFAULT_PATH), (
-            f"Expected saved synthetic CSV at '{SYNTHETIC_DATASET_DEFAULT_PATH}'."
-        )
-        disk_df = pd.read_csv(SYNTHETIC_DATASET_DEFAULT_PATH)
+        resolved_csv = resolve_project_path(SYNTHETIC_DATASET_DEFAULT_PATH)
+        if not os.path.exists(resolved_csv):
+            # On fresh clones where /Data/processed/ is gitignored, generate into tmp_path
+            resolved_csv = str(tmp_path / "meta_dataset_synthetic.csv")
+            save_synthetic_meta_dataset(output_path=resolved_csv)
+
+        disk_df = pd.read_csv(resolved_csv)
         assert len(disk_df) == 5000
         assert disk_df["moderation_label"].value_counts().to_dict() == TARGET_LABEL_COUNTS
         assert (disk_df["is_synthetic"] == True).all()
@@ -501,7 +506,7 @@ class TestSyntheticMetaDatasetAndTraining:
 
         model_out = str(tmp_path / "synthetic_meta_logreg_test.joblib")
         report = train_from_csv(
-            SYNTHETIC_DATASET_DEFAULT_PATH,
+            resolved_csv,
             output_model_path=model_out,
             test_size=0.15,
             val_size=0.15,
@@ -524,7 +529,26 @@ class TestSyntheticMetaDatasetAndTraining:
         assert len(preds) == 10
         assert set(preds).issubset(set(META_CLASSES))
 
-        # Verify persisted synthetic artifact loads cleanly as well
-        assert os.path.exists("models/saved/meta_logreg_synthetic.joblib")
+        # Verify persisted synthetic artifact loads cleanly from any working directory
+        persisted_path = resolve_project_path("models/saved/meta_logreg_synthetic.joblib")
+        assert os.path.exists(persisted_path)
         persisted = MetaLogisticRegression.load("models/saved/meta_logreg_synthetic.joblib")
         assert persisted.is_fitted_ is True
+
+    def test_cross_version_sklearn_predict_proba_fallback(self, monkeypatch):
+        """
+        Simulate scikit-learn minor-version mismatch (e.g. 1.9 artifact loaded on
+        1.6/1.7 raising AttributeError for missing 'multi_class') and verify the
+        fitted-parameter softmax fallback produces identical probabilities.
+        """
+        persisted = MetaLogisticRegression.load("models/saved/meta_logreg_synthetic.joblib")
+        df = _make_meta_feature_fixture(n_per_class=4)
+        X = df[list(META_FEATURE_COLUMNS)]
+        expected_proba = persisted.predict_proba(X)
+
+        def _broken_predict_proba(_X):
+            raise AttributeError("'LogisticRegression' object has no attribute 'multi_class'")
+
+        monkeypatch.setattr(persisted.pipeline, "predict_proba", _broken_predict_proba)
+        fallback_proba = persisted.predict_proba(X)
+        assert np.allclose(expected_proba, fallback_proba, atol=1e-12)

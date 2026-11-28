@@ -19,6 +19,7 @@ compatibility but the canonical output is the dict above.
 
 from __future__ import annotations
 
+import logging
 import os
 import math
 import warnings
@@ -45,7 +46,10 @@ from src.features.temporal_features import (
     apply_scaler,
     SEQ_LEN,
 )
+from src.utils.helpers import ensure_numpy_pickle_compat, resolve_project_path
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH  = "models/saved/bot_rnn_model.pth"
 DEFAULT_SCALER_PATH = "models/vectorizers/bot_scaler.joblib"
@@ -54,7 +58,8 @@ DEFAULT_META_PATH   = "models/vectorizers/bot_input_meta.joblib"
 
 class BotDetector:
     """
-    Loads the trained BotRNN model and handles single-sample or batch inference.
+    Loads the trained BotRNN model and handles single-sample or batch inference
+    strictly from saved model artifacts (never requires loading the training CSV).
     """
 
     def __init__(
@@ -70,27 +75,40 @@ class BotDetector:
                 "Install it with: pip install torch"
             ) from _TORCH_IMPORT_ERROR
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # Default to CPU for deterministic cross-machine inference compatibility
+        # (avoids lazy CUDA/cuDNN kernel or driver failures on mismatched GPUs).
+        if device is None:
+            self.device = "cpu"
+        elif device.startswith("cuda") and not torch.cuda.is_available():
+            logger.warning("Requested device '%s' is unavailable; falling back to 'cpu'.", device)
+            self.device = "cpu"
+        else:
+            self.device = device
 
-        if not os.path.exists(model_path):
+        resolved_model_path = resolve_project_path(model_path)
+        resolved_scaler_path = resolve_project_path(scaler_path)
+        resolved_meta_path = resolve_project_path(meta_path)
+
+        if not os.path.exists(resolved_model_path):
             raise FileNotFoundError(
                 f"Bot RNN model not found at '{model_path}'.\n"
                 "Please train the model first using the Colab notebook or train script."
             )
-        if not os.path.exists(scaler_path):
+        if not os.path.exists(resolved_scaler_path):
             raise FileNotFoundError(
                 f"Bot feature scaler not found at '{scaler_path}'.\n"
                 "Please ensure the fitted StandardScaler file is present."
             )
 
+        ensure_numpy_pickle_compat()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self.scaler = joblib.load(scaler_path)
+            self.scaler = joblib.load(resolved_scaler_path)
 
-        if os.path.exists(meta_path):
+        if os.path.exists(resolved_meta_path):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                meta = joblib.load(meta_path)
+                meta = joblib.load(resolved_meta_path)
             self.input_size = meta.get("input_size", 3)
             self.seq_len = meta.get("seq_len", SEQ_LEN)
             self.features = meta.get("features", ACCOUNT_FEATURES)
@@ -106,17 +124,34 @@ class BotDetector:
                 f"but metadata specifies {len(self.features)}."
             )
 
-        self.model = BotRNN(input_size=self.input_size).to(self.device)
+        self.model = BotRNN(input_size=self.input_size)
         # weights_only=True is used when PyTorch supports it (>=2.0) to avoid
         # deserialising arbitrary Python objects from untrusted checkpoints.
         try:
             state_dict = torch.load(
-                model_path, map_location=self.device, weights_only=True
+                resolved_model_path, map_location="cpu", weights_only=True
             )
         except TypeError:
             # Older PyTorch versions (<2.0) do not support weights_only.
-            state_dict = torch.load(model_path, map_location=self.device)
+            state_dict = torch.load(resolved_model_path, map_location="cpu")
         self.model.load_state_dict(state_dict)
+
+        if self.device != "cpu":
+            try:
+                self.model = self.model.to(self.device)
+                self.model.eval()
+                with torch.no_grad():
+                    dummy = torch.zeros((1, self.seq_len, self.input_size), dtype=torch.float32, device=self.device)
+                    _ = self.model(dummy)
+            except Exception:
+                logger.warning(
+                    "Device '%s' failed BotRNN forward verification; falling back to 'cpu'.",
+                    self.device,
+                    exc_info=True,
+                )
+                self.device = "cpu"
+                self.model = self.model.to("cpu")
+
         self.model.eval()
         print(f"[BotDetector] Successfully loaded BotRNN from '{model_path}' on {self.device}.")
 

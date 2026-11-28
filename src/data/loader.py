@@ -2,48 +2,101 @@
 src/data/loader.py
 ------------------
 Loads the Twitter Bot Detection dataset (CSV) and returns a DataFrame.
-Supports both 'twitter_human_bots_dataset.csv' (primary, real-world dataset)
-and legacy 'bot_detection_data.csv'.
+Resolves dataset paths relative to the project root so loading works reliably
+regardless of the current working directory or operating system.
+
+Supports:
+  - 'twitter_human_bots_dataset.csv'
+  - 'twitter_human_bots_dataset-1.csv' (and numbered variants)
+  - 'Data/raw/' or 'Data/' dataset subdirectories
+  - legacy 'bot_detection_data.csv'
 """
 
-import pandas as pd
+from __future__ import annotations
+
 import os
+from pathlib import Path
+
+import pandas as pd
+
+from src.utils.helpers import PROJECT_ROOT
+
 
 PRIMARY_DATASET_PATH = "twitter_human_bots_dataset.csv"
+ALT_PRIMARY_DATASET_PATH = "twitter_human_bots_dataset-1.csv"
 LEGACY_DATASET_PATH = "bot_detection_data.csv"
 
+_CANDIDATE_RELATIVE_PATHS: tuple[Path, ...] = (
+    Path(PRIMARY_DATASET_PATH),
+    Path(ALT_PRIMARY_DATASET_PATH),
+    Path("Data") / "raw" / PRIMARY_DATASET_PATH,
+    Path("Data") / "raw" / ALT_PRIMARY_DATASET_PATH,
+    Path("Data") / PRIMARY_DATASET_PATH,
+    Path("Data") / ALT_PRIMARY_DATASET_PATH,
+    Path("data") / "raw" / PRIMARY_DATASET_PATH,
+    Path("data") / "raw" / ALT_PRIMARY_DATASET_PATH,
+    Path("data") / PRIMARY_DATASET_PATH,
+    Path("data") / ALT_PRIMARY_DATASET_PATH,
+    Path(LEGACY_DATASET_PATH),
+)
 
-def load_bot_dataset(path: str = None) -> pd.DataFrame:
+
+def resolve_bot_dataset_path(path: str | os.PathLike | None = None) -> Path:
+    """
+    Locate the Twitter Bot Detection CSV path deterministically relative to
+    PROJECT_ROOT (with current-working-directory fallback for custom paths).
+    """
+    if path is not None:
+        explicit = Path(path)
+        if explicit.is_absolute():
+            if explicit.is_file():
+                return explicit
+            raise FileNotFoundError(f"Dataset not found at: {path}")
+
+        for base in (Path.cwd(), PROJECT_ROOT):
+            candidate = (base / explicit).resolve()
+            if candidate.is_file():
+                return candidate
+        raise FileNotFoundError(f"Dataset not found at: {path}")
+
+    for base in (PROJECT_ROOT, Path.cwd()):
+        for rel in _CANDIDATE_RELATIVE_PATHS:
+            candidate = (base / rel).resolve()
+            if candidate.is_file():
+                return candidate
+
+        for search_dir in (base, base / "Data" / "raw", base / "Data", base / "data"):
+            if search_dir.is_dir():
+                matches = sorted(search_dir.glob("twitter_human_bots_dataset*.csv"))
+                for match in matches:
+                    if match.is_file():
+                        return match.resolve()
+
+    raise FileNotFoundError(
+        f"No bot dataset found under '{PROJECT_ROOT}'. "
+        f"Expected '{PRIMARY_DATASET_PATH}' (or '{ALT_PRIMARY_DATASET_PATH}') "
+        "in the project root or 'Data/raw/'."
+    )
+
+
+def load_bot_dataset(path: str | os.PathLike | None = None) -> pd.DataFrame:
     """
     Load the Twitter Bot Detection dataset from a CSV file.
 
     Parameters
     ----------
-    path : str, optional
-        Path to the CSV file. If None, checks for PRIMARY_DATASET_PATH,
-        then LEGACY_DATASET_PATH.
+    path : str or PathLike, optional
+        Explicit path to the CSV file. If None, searches standard project-root
+        locations automatically.
 
     Returns
     -------
     pd.DataFrame
         Raw dataset with all original columns.
     """
-    if path is None:
-        if os.path.exists(PRIMARY_DATASET_PATH):
-            path = PRIMARY_DATASET_PATH
-        elif os.path.exists(LEGACY_DATASET_PATH):
-            path = LEGACY_DATASET_PATH
-        else:
-            raise FileNotFoundError(
-                f"No bot dataset found. Please place '{PRIMARY_DATASET_PATH}' "
-                "in the project root directory."
-            )
-
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Dataset not found at: {path}")
-
-    df = pd.read_csv(path)
-    print(f"[loader] Loaded {len(df):,} rows from '{path}'.")
+    resolved_path = resolve_bot_dataset_path(path)
+    df = pd.read_csv(resolved_path)
+    print(f"[loader] Loaded {len(df):,} rows from '{resolved_path.name}'.")
     return df
 
 

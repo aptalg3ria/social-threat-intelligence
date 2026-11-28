@@ -23,13 +23,15 @@ ENV/
 # Jupyter
 .ipynb_checkpoints/
 
-# Dataset files (large / external / generated datasets excluded from Git; anchored to root so src/data/ is tracked)
+# Dataset files (large / generated datasets excluded; primary bot dataset & doc template tracked)
 /Data/raw/
 /Data/processed/
 /Data/samples/
 /data/
 *.csv
 !docs/meta_annotation_template.csv
+!twitter_human_bots_dataset.csv
+!twitter_human_bots_dataset-*.csv
 
 # Temporary files & local logs
 *.log

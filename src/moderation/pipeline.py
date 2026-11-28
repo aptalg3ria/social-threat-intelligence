@@ -27,6 +27,7 @@ from src.models.logistic_regression import (
 from src.moderation.human_review import ReviewQueue
 from src.moderation.meta_supervisor import MetaSupervisorAgent
 from src.moderation.policy import SupervisorPolicy
+from src.utils.helpers import resolve_project_path
 
 
 DEFAULT_SYNTHETIC_META_MODEL_PATH = "models/saved/meta_logreg_synthetic.joblib"
@@ -103,7 +104,12 @@ def validate_account_metadata(account_data: Any) -> dict[str, Any]:
             raise ValueError(
                 f"Account field '{col}' must be numeric, got {type(val).__name__}."
             )
-        fval = float(val)
+        try:
+            fval = float(val)
+        except OverflowError as exc:
+            raise ValueError(
+                f"Account field '{col}' is too large to convert to a finite number."
+            ) from exc
         if math.isnan(fval) or math.isinf(fval) or fval < 0.0:
             raise ValueError(
                 f"Account field '{col}' must be a finite non-negative number, got {val!r}."
@@ -152,11 +158,11 @@ class SocialThreatPipeline:
         self.bot_detector = bot_detector or BotDetector()
         self.policy = policy or SupervisorPolicy()
         self.review_queue = review_queue if review_queue is not None else ReviewQueue()
-        self.meta_model_path = meta_model_path
+        self.meta_model_path = resolve_project_path(meta_model_path)
 
         self.meta_supervisor = MetaSupervisorAgent(
             meta_classifier=meta_classifier,
-            model_path=meta_model_path,
+            model_path=self.meta_model_path,
             policy=self.policy,
             meta_confidence_threshold=meta_confidence_threshold,
             fake_news_detector=self.fake_news_detector,

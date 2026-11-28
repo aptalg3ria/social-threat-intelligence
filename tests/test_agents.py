@@ -27,6 +27,8 @@ import pandas as pd
 import pytest
 import joblib
 
+from src.utils.helpers import resolve_project_path
+
 # ---------------------------------------------------------------------------
 # Shared schema validator
 # ---------------------------------------------------------------------------
@@ -79,19 +81,19 @@ class TestFakeNewsArtifactLoading:
     """Verify that saved model artefacts exist and load correctly."""
 
     def test_vectorizer_file_exists(self):
-        assert os.path.exists("models/vectorizers/tfidf_vectorizer.joblib"), (
+        assert os.path.exists(resolve_project_path("models/vectorizers/tfidf_vectorizer.joblib")), (
             "TF-IDF vectorizer file is missing."
         )
 
     def test_model_file_exists(self):
-        assert os.path.exists("models/saved/fake_news_model.joblib"), (
+        assert os.path.exists(resolve_project_path("models/saved/fake_news_model.joblib")), (
             "Fake news model file is missing."
         )
 
     def test_vectorizer_loads(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            vect = joblib.load("models/vectorizers/tfidf_vectorizer.joblib")
+            vect = joblib.load(resolve_project_path("models/vectorizers/tfidf_vectorizer.joblib"))
         assert hasattr(vect, "transform"), "Vectorizer must have transform()"
         assert hasattr(vect, "vocabulary_"), "Vectorizer must have vocabulary_"
         assert len(vect.vocabulary_) > 0, "Vocabulary must not be empty"
@@ -99,14 +101,14 @@ class TestFakeNewsArtifactLoading:
     def test_vectorizer_parameters(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            vect = joblib.load("models/vectorizers/tfidf_vectorizer.joblib")
+            vect = joblib.load(resolve_project_path("models/vectorizers/tfidf_vectorizer.joblib"))
         assert vect.max_features == 5000
         assert vect.ngram_range == (1, 2)
 
     def test_model_loads(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            model = joblib.load("models/saved/fake_news_model.joblib")
+            model = joblib.load(resolve_project_path("models/saved/fake_news_model.joblib"))
         assert hasattr(model, "predict"), "Model must have predict()"
         assert hasattr(model, "predict_proba"), "Model must have predict_proba()"
         assert hasattr(model, "classes_"), "Model must have classes_"
@@ -114,7 +116,7 @@ class TestFakeNewsArtifactLoading:
     def test_model_classes(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            model = joblib.load("models/saved/fake_news_model.joblib")
+            model = joblib.load(resolve_project_path("models/saved/fake_news_model.joblib"))
         assert list(model.classes_) == [0, 1], (
             "Classes must be [0, 1] (0=fake, 1=real)"
         )
@@ -327,8 +329,8 @@ class TestFakeNewsPreprocessing:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            vect  = joblib.load("models/vectorizers/tfidf_vectorizer.joblib")
-            model = joblib.load("models/saved/fake_news_model.joblib")
+            vect  = joblib.load(resolve_project_path("models/vectorizers/tfidf_vectorizer.joblib"))
+            model = joblib.load(resolve_project_path("models/saved/fake_news_model.joblib"))
 
         # Direct call without clean_text (what the old code did)
         X_raw     = vect.transform([plain_text])
@@ -403,24 +405,24 @@ class TestBotDetectorArtifacts:
     """Verify that all 3 Bot Detection artefacts exist and load."""
 
     def test_model_file_exists(self):
-        assert os.path.exists("models/saved/bot_rnn_model.pth"), (
+        assert os.path.exists(resolve_project_path("models/saved/bot_rnn_model.pth")), (
             "Bot RNN model weights missing."
         )
 
     def test_scaler_file_exists(self):
-        assert os.path.exists("models/vectorizers/bot_scaler.joblib"), (
+        assert os.path.exists(resolve_project_path("models/vectorizers/bot_scaler.joblib")), (
             "Bot scaler missing."
         )
 
     def test_meta_file_exists(self):
-        assert os.path.exists("models/vectorizers/bot_input_meta.joblib"), (
+        assert os.path.exists(resolve_project_path("models/vectorizers/bot_input_meta.joblib")), (
             "Bot input meta missing."
         )
 
     def test_scaler_loads(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            scaler = joblib.load("models/vectorizers/bot_scaler.joblib")
+            scaler = joblib.load(resolve_project_path("models/vectorizers/bot_scaler.joblib"))
         assert hasattr(scaler, "transform")
         assert scaler.n_features_in_ == 15, (
             f"Scaler expects 15 features, found {scaler.n_features_in_}"
@@ -430,7 +432,7 @@ class TestBotDetectorArtifacts:
         from src.data.preprocessing import ACCOUNT_FEATURES
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            meta = joblib.load("models/vectorizers/bot_input_meta.joblib")
+            meta = joblib.load(resolve_project_path("models/vectorizers/bot_input_meta.joblib"))
         assert meta["input_size"] == 3
         assert meta["seq_len"] == 5
         assert meta["features"] == ACCOUNT_FEATURES, (

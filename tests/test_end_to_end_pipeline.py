@@ -40,6 +40,7 @@ from src.moderation import (
     SocialThreatPipeline,
     SupervisorAgent,
 )
+from src.utils.helpers import resolve_project_path
 
 
 EXPECTED_AGENT2_FEATURES = [
@@ -200,7 +201,7 @@ class TestLiveAgentsAndPipelineSmoke:
         assert bot_res["scores"]["bot"] > 0.85
 
     def test_agent3_loads_synthetic_artifact(self, live_pipeline):
-        assert os.path.exists(DEFAULT_SYNTHETIC_META_MODEL_PATH)
+        assert os.path.exists(resolve_project_path(DEFAULT_SYNTHETIC_META_MODEL_PATH))
         meta_model = live_pipeline.meta_supervisor.meta_classifier
         assert isinstance(meta_model, MetaLogisticRegression)
         assert meta_model.is_fitted_ is True

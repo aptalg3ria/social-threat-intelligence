@@ -57,8 +57,14 @@ def fit_scaler(X: np.ndarray, save_path: str = None) -> StandardScaler:
 
 
 def apply_scaler(X: np.ndarray, scaler: StandardScaler) -> np.ndarray:
-    """Apply fitted StandardScaler to X."""
-    return scaler.transform(X).astype(np.float32)
+    """Apply fitted StandardScaler to X with cross-version fallback."""
+    try:
+        return scaler.transform(X).astype(np.float32)
+    except AttributeError:
+        mean = np.asarray(scaler.mean_, dtype=np.float64)
+        scale = np.asarray(scaler.scale_, dtype=np.float64)
+        safe_scale = np.where(scale == 0.0, 1.0, scale)
+        return ((np.asarray(X, dtype=np.float64) - mean) / safe_scale).astype(np.float32)
 
 
 def prepare_rnn_input(df: pd.DataFrame, scaler: StandardScaler = None,

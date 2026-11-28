@@ -15,6 +15,8 @@ non-redundant meta-features derived from both agents' predicted probabilities.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import os
 from typing import Any, Sequence
 
@@ -25,7 +27,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from src.utils.helpers import load_model, save_model
+from src.utils.helpers import load_model, resolve_project_path, save_model
+
+
+logger = logging.getLogger(__name__)
 
 
 META_CLASSES: tuple[str, ...] = ("APPROVE", "REVIEW", "RESTRICT")
@@ -143,16 +148,22 @@ class MetaLogisticRegression:
         self.is_fitted_: bool = False
 
     def _build_pipeline(self) -> Pipeline:
-        # Compatible with scikit-learn >= 1.6 through 1.9+ (uses default L2
-        # regularization via l1_ratio=0.0 and multinomial loss via solver='lbfgs').
-        clf = LogisticRegression(
-            C=self.C,
-            l1_ratio=0.0,
-            solver="lbfgs",
-            class_weight=self.class_weight,
-            max_iter=self.max_iter,
-            random_state=self.random_state,
-        )
+        # Build LogisticRegression compatibly across scikit-learn 1.6–1.7
+        # (where penalty defaults to 'l2') and scikit-learn 1.8–1.9+
+        # (where penalty is 'deprecated' and l1_ratio=0.0 selects L2).
+        sig = inspect.signature(LogisticRegression.__init__)
+        lr_kwargs: dict[str, Any] = {
+            "C": self.C,
+            "solver": "lbfgs",
+            "class_weight": self.class_weight,
+            "max_iter": self.max_iter,
+            "random_state": self.random_state,
+        }
+        penalty_param = sig.parameters.get("penalty")
+        if penalty_param is not None and penalty_param.default == "deprecated":
+            lr_kwargs["l1_ratio"] = 0.0
+
+        clf = LogisticRegression(**lr_kwargs)
         return Pipeline([
             ("scaler", StandardScaler()),
             ("classifier", clf),
@@ -204,6 +215,36 @@ class MetaLogisticRegression:
         self.is_fitted_ = True
         return self
 
+    @staticmethod
+    def _manual_pipeline_proba(pipeline: Pipeline, X_arr: np.ndarray) -> np.ndarray:
+        """
+        Compute exact StandardScaler + multinomial softmax probabilities directly
+        from fitted parameters as a cross-version fallback when an artifact was
+        serialized under a different scikit-learn minor version (e.g. 1.9 -> 1.6/1.7).
+        """
+        scaler = pipeline.named_steps["scaler"]
+        clf = pipeline.named_steps["classifier"]
+
+        X_scaled = np.asarray(X_arr, dtype=np.float64)
+        if getattr(scaler, "with_mean", True) and hasattr(scaler, "mean_"):
+            X_scaled = X_scaled - np.asarray(scaler.mean_, dtype=np.float64)
+        if getattr(scaler, "with_std", True) and hasattr(scaler, "scale_"):
+            scale = np.asarray(scaler.scale_, dtype=np.float64)
+            safe_scale = np.where(scale == 0.0, 1.0, scale)
+            X_scaled = X_scaled / safe_scale
+
+        coef = np.asarray(clf.coef_, dtype=np.float64)
+        intercept = np.asarray(clf.intercept_, dtype=np.float64)
+        if coef.shape[0] == 1:
+            logits_pos = (X_scaled @ coef.T + intercept).ravel()
+            p_pos = 1.0 / (1.0 + np.exp(-np.clip(logits_pos, -500.0, 500.0)))
+            return np.column_stack([1.0 - p_pos, p_pos])
+
+        logits = X_scaled @ coef.T + intercept
+        logits = logits - np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(logits)
+        return exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+
     def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """
         Return class probabilities aligned to META_CLASSES = ('APPROVE', 'REVIEW', 'RESTRICT'),
@@ -213,7 +254,16 @@ class MetaLogisticRegression:
             raise RuntimeError("MetaLogisticRegression must be fitted before calling predict_proba.")
 
         X_arr = self._validate_feature_matrix(X)
-        raw_proba = self.pipeline.predict_proba(X_arr)
+        try:
+            raw_proba = self.pipeline.predict_proba(X_arr)
+        except AttributeError:
+            logger.warning(
+                "Cross-version scikit-learn attribute mismatch during MetaLogisticRegression.predict_proba; "
+                "using fitted parameter softmax fallback.",
+                exc_info=True,
+            )
+            raw_proba = self._manual_pipeline_proba(self.pipeline, X_arr)
+
         clf_classes = self.pipeline.named_steps["classifier"].classes_
 
         if len(clf_classes) == len(META_CLASSES) and np.array_equal(clf_classes, np.array([0, 1, 2])):
@@ -271,8 +321,9 @@ class MetaLogisticRegression:
 
     @classmethod
     def load(cls, path: str = DEFAULT_META_MODEL_PATH) -> "MetaLogisticRegression":
-        """Load a saved MetaLogisticRegression model bundle."""
-        payload = load_model(path)
+        """Load a saved MetaLogisticRegression model bundle with cross-version compatibility."""
+        resolved_path = resolve_project_path(path)
+        payload = load_model(resolved_path)
         if not isinstance(payload, dict) or "pipeline" not in payload:
             raise ValueError(f"Invalid MetaLogisticRegression artifact at '{path}'.")
 
@@ -285,6 +336,22 @@ class MetaLogisticRegression:
             feature_names=tuple(payload.get("feature_names", META_FEATURE_COLUMNS)),
         )
         instance.pipeline = payload["pipeline"]
+
+        # Normalize cross-version LogisticRegression attributes in memory (never rewriting disk)
+        # so an artifact trained on scikit-learn 1.8/1.9+ runs cleanly on 1.6/1.7 and vice versa.
+        clf = instance.pipeline.named_steps.get("classifier")
+        if clf is not None:
+            sig = inspect.signature(LogisticRegression.__init__)
+            if "multi_class" in sig.parameters and not hasattr(clf, "multi_class"):
+                clf.multi_class = "auto"
+            penalty_param = sig.parameters.get("penalty")
+            if (
+                penalty_param is not None
+                and penalty_param.default != "deprecated"
+                and getattr(clf, "penalty", None) == "deprecated"
+            ):
+                clf.penalty = "l2"
+
         instance.classes_ = tuple(payload.get("classes", META_CLASSES))
         instance.is_fitted_ = True
         return instance

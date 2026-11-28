@@ -14,6 +14,7 @@ Run with:
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
+import logging
 import os
 import sys
 from typing import Any
@@ -21,6 +22,8 @@ from typing import Any
 import altair as alt
 import pandas as pd
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -241,6 +244,7 @@ def load_cached_models() -> dict[str, Any]:
             vectorizer_path=_abs_path(FN_VECT_REL),
         )
     except Exception as exc:
+        logger.exception("Agent 1 (Fake News) model loading failed")
         status["errors"].append(f"Agent 1 (Fake News) load failed: {exc}")
 
     try:
@@ -250,6 +254,7 @@ def load_cached_models() -> dict[str, Any]:
             meta_path=_abs_path(BOT_META_REL),
         )
     except Exception as exc:
+        logger.exception("Agent 2 (Bot Detection) model loading failed")
         status["errors"].append(f"Agent 2 (Bot Detection) load failed: {exc}")
 
     try:
@@ -257,12 +262,14 @@ def load_cached_models() -> dict[str, Any]:
             _abs_path(DEFAULT_SYNTHETIC_META_MODEL_PATH)
         )
     except Exception as exc:
+        logger.exception("Agent 3 (Decision & Moderation Agent) model loading failed")
         status["errors"].append(f"Agent 3 (Decision & Moderation Agent) load failed: {exc}")
 
     try:
         _ = SupervisorAgent()
         status["rule_supervisor_available"] = True
     except Exception:
+        logger.exception("Rule-Based Supervisor initialization failed")
         status["rule_supervisor_available"] = False
 
     status["ready"] = (
@@ -697,18 +704,23 @@ def render_analyze_page(pipeline: SocialThreatPipeline | None, models: dict[str,
             validate_post_text(post_text)
             validate_account_metadata(account_data)
         except (TypeError, ValueError) as exc:
+            logger.exception("Analyze Post input validation failed")
             st.error(f"Input validation failed: {exc}")
             return
 
-        effective_case_id = (
+        base_case_id = (
             case_id_input.strip()
             if isinstance(case_id_input, str) and case_id_input.strip()
             else f"CASE-{len(st.session_state['analysis_history']) + 1:04d}"
         )
-        # Ensure unique case_id if user submits same ID twice in a session
+        # Ensure unique case_id across both analysis_history and ReviewQueue
         existing_ids = {item["case_id"] for item in st.session_state["analysis_history"]}
-        if effective_case_id in existing_ids:
-            effective_case_id = f"{effective_case_id}-{len(existing_ids) + 1}"
+        existing_ids.update(c.case_id for c in st.session_state["review_queue"].list_cases())
+        effective_case_id = base_case_id
+        suffix = 2
+        while effective_case_id in existing_ids:
+            effective_case_id = f"{base_case_id}-{suffix}"
+            suffix += 1
 
         with st.spinner("Running Agent 1, Agent 2, and Agent 3 moderation pipeline..."):
             try:
@@ -719,9 +731,16 @@ def render_analyze_page(pipeline: SocialThreatPipeline | None, models: dict[str,
                     enqueue_review=True,
                 )
             except (TypeError, ValueError, FileNotFoundError, RuntimeError) as exc:
+                logger.exception(
+                    "Pipeline execution failed for case_id=%s", effective_case_id
+                )
                 st.error(f"Analysis failed: {exc}")
                 return
             except Exception:
+                logger.exception(
+                    "Unexpected exception while running the analysis pipeline for case_id=%s",
+                    effective_case_id,
+                )
                 st.error("An unexpected error occurred while running the analysis pipeline.")
                 return
 
@@ -869,7 +888,11 @@ def render_human_review_queue_page() -> None:
                 )
                 st.rerun()
             except (KeyError, ValueError) as exc:
+                logger.exception("Failed to resolve review case %s", selected_cid)
                 st.error(f"Could not resolve review case: {exc}")
+            except Exception:
+                logger.exception("Unexpected error resolving review case %s", selected_cid)
+                st.error("An unexpected error occurred while resolving the review case.")
 
     if resolved:
         st.divider()

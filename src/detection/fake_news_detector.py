@@ -23,12 +23,16 @@ Integration contract
 }
 """
 
+import logging
 import os
 import warnings
 import joblib
 
 from src.data.preprocessing import clean_text
+from src.utils.helpers import ensure_numpy_pickle_compat, resolve_project_path
 
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Default artifact paths (relative to project root)
@@ -48,25 +52,34 @@ class FakeNewsDetector:
         model_path: str = DEFAULT_MODEL_PATH,
         vectorizer_path: str = DEFAULT_VECTORIZER_PATH,
     ):
-        if not os.path.exists(vectorizer_path):
+        resolved_vect_path = resolve_project_path(vectorizer_path)
+        resolved_model_path = resolve_project_path(model_path)
+
+        if not os.path.exists(resolved_vect_path):
             raise FileNotFoundError(
                 f"TF-IDF vectorizer not found at '{vectorizer_path}'.\n"
                 "Please ensure the trained vectorizer file is present."
             )
-        if not os.path.exists(model_path):
+        if not os.path.exists(resolved_model_path):
             raise FileNotFoundError(
                 f"Fake news model not found at '{model_path}'.\n"
                 "Please ensure the trained model file is present."
             )
 
         try:
+            ensure_numpy_pickle_compat()
             with warnings.catch_warnings():
                 # Suppress sklearn version mismatch warnings on load; artefacts
                 # produced under sklearn 1.6.x remain compatible with 1.9.x.
                 warnings.simplefilter("ignore")
-                self.vectorizer = joblib.load(vectorizer_path)
-                self.model      = joblib.load(model_path)
+                self.vectorizer = joblib.load(resolved_vect_path)
+                self.model      = joblib.load(resolved_model_path)
         except Exception as exc:
+            logger.exception(
+                "Failed to load FakeNewsDetector artifacts from '%s' and '%s'",
+                resolved_model_path,
+                resolved_vect_path,
+            )
             raise RuntimeError(
                 f"Failed to load FakeNewsDetector artifacts from "
                 f"'{model_path}' and '{vectorizer_path}': {exc}"

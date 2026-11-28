@@ -24,7 +24,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.data.loader import load_bot_dataset
+from src.data.loader import load_bot_dataset, resolve_bot_dataset_path
 from src.data.preprocessing import (
     preprocess,
     engineer_account_features,
@@ -39,6 +39,8 @@ from src.features.temporal_features import (
 )
 from src.models.rnn import BotRNN, predict_proba
 from src.detection.bot_detector import BotDetector
+from src.moderation.pipeline import SocialThreatPipeline
+from src.utils.helpers import resolve_project_path
 
 
 @pytest.fixture(scope="module")
@@ -129,8 +131,8 @@ class TestBotRNN:
 class TestBotDetectorIntegration:
 
     def test_detector_inference(self):
-        if not os.path.exists("models/saved/bot_rnn_model.pth"):
-            pytest.skip("Model weights not saved yet.")
+        model_path = resolve_project_path("models/saved/bot_rnn_model.pth")
+        assert os.path.exists(model_path), "Model weights missing at models/saved/bot_rnn_model.pth"
 
         detector = BotDetector()
         sample = {
@@ -155,3 +157,49 @@ class TestBotDetectorIntegration:
         assert 0.0 <= res["bot_score"] <= 1.0
         assert res["bot_class"] in (0, 1)
         assert res["bot_label"] in ("HUMAN", "BOT")
+
+    def test_load_dataset_independent_of_cwd(self, monkeypatch, tmp_path):
+        """Dataset resolution must succeed regardless of current working directory."""
+        monkeypatch.chdir(tmp_path)
+        resolved = resolve_bot_dataset_path()
+        assert resolved.is_file()
+        df = load_bot_dataset()
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) > 0
+        assert "account_type" in df.columns
+
+    def test_bot_inference_does_not_load_training_csv(self, monkeypatch, tmp_path):
+        """BotDetector and SocialThreatPipeline inference must never read the training CSV."""
+        import src.data.loader as loader_mod
+
+        def _forbid_dataset_load(*args, **kwargs):
+            raise AssertionError("Bot inference must not load the training CSV dataset.")
+
+        monkeypatch.setattr(loader_mod, "load_bot_dataset", _forbid_dataset_load)
+        monkeypatch.setattr(loader_mod, "resolve_bot_dataset_path", _forbid_dataset_load)
+        monkeypatch.chdir(tmp_path)
+
+        pipeline = SocialThreatPipeline()
+        sample_account = {
+            "followers_count": 15,
+            "friends_count": 4800,
+            "statuses_count": 45000,
+            "favourites_count": 1,
+            "average_tweets_per_day": 180.0,
+            "account_age_days": 250,
+            "default_profile": True,
+            "default_profile_image": True,
+            "geo_enabled": False,
+            "verified": False,
+            "created_at": "2023-11-02 03:15:00",
+            "description": "",
+            "screen_name": "news_bot_9948271",
+        }
+        out = pipeline.run(
+            "BREAKING: Secret government microchip inside tap water exposed!! "
+            "Share before they delete this! Mainstream media refuses to report "
+            "this Big Pharma conspiracy cure they are hiding from the public!",
+            sample_account,
+        )
+        assert out["bot_detection"]["prediction"] == "bot"
+        assert out["moderation"]["decision"] == "RESTRICT"

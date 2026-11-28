@@ -150,7 +150,82 @@ class TestStreamlitDashboard:
         assert metrics["Bot Detections"] == "1"
         assert metrics["Fake News"] == "0"
 
-        # 6) System Information renders cleanly with synthetic disclaimer
+        # 6) System Information renders cleanly
         _navigate(at, "System Information")
         assert not at.exception
         assert len(at.dataframe) >= 1
+
+    def test_all_four_core_scenarios_and_no_csv_load_during_inference(self, monkeypatch):
+        """
+        Verify all 4 required Analyze Post scenarios in Streamlit without ever
+        loading the training CSV dataset during inference:
+          - Human + Real News -> APPROVE
+          - Bot + Real News   -> REVIEW
+          - Human + Fake News -> REVIEW
+          - Bot + Fake News   -> RESTRICT
+        """
+        import src.data.loader as loader_mod
+
+        def _forbid_csv(*args, **kwargs):
+            raise AssertionError("Analyze Post must not load the training CSV during inference.")
+
+        monkeypatch.setattr(loader_mod, "load_bot_dataset", _forbid_csv)
+
+        at = _new_app()
+        _navigate(at, "Analyze a Post")
+
+        expected_scenarios = [
+            ("Human + Real News", "real", "human", "APPROVE", False),
+            ("Bot + Real News", "real", "bot", "REVIEW", True),
+            ("Human + Fake News", "fake", "human", "REVIEW", True),
+            ("Bot + Fake News", "fake", "bot", "RESTRICT", True),
+        ]
+
+        for preset_label, exp_fn, exp_bot, exp_decision, exp_queued in expected_scenarios:
+            preset_btn = next(b for b in at.button if b.label == preset_label)
+            preset_btn.click().run()
+            submit_btn = next(b for b in at.button if b.label == "Analyze Post")
+            submit_btn.click().run()
+
+            assert not at.exception
+            assert not [e.value for e in at.error if "unexpected error" in e.value.lower()]
+            latest = at.session_state["latest_result"]
+            assert latest["fake_news"]["prediction"] == exp_fn
+            assert latest["bot_detection"]["prediction"] == exp_bot
+            assert latest["moderation"]["decision"] == exp_decision
+            assert latest["review_queue"]["queued"] is exp_queued
+
+        assert len(at.session_state["analysis_history"]) == 4
+        assert len(at.session_state["review_queue"].get_pending()) == 3
+
+    def test_unexpected_pipeline_exception_logs_traceback_and_shows_friendly_error(
+        self, monkeypatch, caplog
+    ):
+        """
+        Verify that if an unexpected exception occurs inside pipeline.run(),
+        logger.exception() logs the full traceback while Streamlit displays a
+        friendly error message instead of leaking a raw traceback to the UI.
+        """
+        import logging
+        from src.moderation.pipeline import SocialThreatPipeline
+
+        def _boom(*args, **kwargs):
+            raise KeyError("simulated_internal_failure")
+
+        monkeypatch.setattr(SocialThreatPipeline, "run", _boom)
+
+        at = _new_app()
+        _navigate(at, "Analyze a Post")
+        preset_btn = next(b for b in at.button if b.label == "Bot + Fake News")
+        preset_btn.click().run()
+
+        with caplog.at_level(logging.ERROR):
+            submit_btn = next(b for b in at.button if b.label == "Analyze Post")
+            submit_btn.click().run()
+
+        assert not at.exception
+        assert any(
+            "An unexpected error occurred while running the analysis pipeline." in e.value
+            for e in at.error
+        )
+        assert any("simulated_internal_failure" in rec.getMessage() or (rec.exc_info and "simulated_internal_failure" in str(rec.exc_info[1])) for rec in caplog.records)
