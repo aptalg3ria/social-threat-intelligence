@@ -378,5 +378,4 @@ By combining fake news detection, bot detection, and intelligent moderation, the
 
 **Project:** Social Threat Intelligence  
 **Architecture:** Multi-Agent Machine Learning System  
-**Interface:** Streamlit  
-**Language:** Python
+
