@@ -1,174 +1,382 @@
 # Social Threat Intelligence
+### Multi-Agent System for Fake News Detection, Bot Detection, and Automated Content Moderation
 
-A multi-agent system designed to detect fake news, automated social bot accounts, and coordinated manipulation patterns on social media, combining independent content and account signals into structured moderation recommendations with human-in-the-loop review.
+## 1. Project Overview
 
-> **Important:** This system provides **threat scores and moderation recommendations only**. It does not automatically ban real users. Flagged cases (`REVIEW` and `RESTRICT`) route to the **Human Review Queue** for human verification and accountability.
+Social Threat Intelligence is an intelligent multi-agent system designed to identify potential threats and suspicious activities on social media platforms.
 
----
+The system combines multiple machine learning agents to analyze social media content and account behavior, then integrates their outputs to support automated moderation decisions.
 
-## Project Overview
+Instead of relying on a single detection model, the platform uses three specialized agents:
 
-The system integrates three specialized agents through `SocialThreatPipeline`:
+- **Agent 1 — Fake News Detection:** Analyzes textual content to identify potentially misleading or false information.
+- **Agent 2 — Bot Detection:** Analyzes account behavior and metadata to identify potentially automated accounts.
+- **Agent 3 — Decision & Moderation:** Combines the outputs of the first two agents to determine an appropriate moderation action.
 
-| Agent | Role | Model / Implementation | Status | Author |
-|---|---|---|---|---|
-| **Agent 1** | Fake News Detection | Multinomial Naive Bayes + TF-IDF | Completed (`94.38%` benchmark test accuracy) | Ahlam |
-| **Agent 2** | Bot Detection | PyTorch 2-layer GRU RNN + `StandardScaler` | Completed (`86.61%` benchmark test accuracy) | Zakaria |
-| **Agent 3** | Decision & Moderation | Logistic Regression Meta-Classifier (`MetaSupervisorAgent`) + Rule-Based Baseline (`SupervisorAgent`) + Human Review Queue | Integrated (Meta-Classifier trained on synthetic proof-of-concept data; Rule-Based baseline preserved) | Collaborative |
+The system also includes a human review mechanism for cases requiring additional verification.
 
----
+## 2. Project Objectives
 
-## Agent 1 — Fake News Detection
+The main objectives are:
 
-- **Objective:** Classify news articles and social media posts as `fake` or `real` from textual content.
-- **Training Dataset:** Balanced Fake and Real News Dataset (`44,058` cleaned/deduplicated articles; `80/20` split — raw dataset not redistributed in repository).
-- **Pipeline:** Text cleaning (`clean_text`) → TF-IDF vectorization → Multinomial Naive Bayes (`MultinomialNB`).
-- **Benchmark Accuracy:** `94.38%`.
-- **Saved Artifacts:**
-  - `models/saved/fake_news_model.joblib`
-  - `models/vectorizers/tfidf_vectorizer.joblib`
+- Detect potentially fake or misleading news.
+- Identify suspicious automated social media accounts.
+- Combine independent detection results into a unified decision.
+- Reduce the risk of incorrect automated moderation.
+- Escalate uncertain cases to human reviewers.
+- Provide an integrated dashboard for analyzing posts and monitoring moderation decisions.
+- Build a modular architecture that allows individual agents to be improved independently.
 
----
+## 3. System Architecture
 
-## Agent 2 — Bot Detection (RNN)
+The project follows a multi-agent architecture.
 
-- **Objective:** Identify automated accounts using network counts, behavioral frequency, profile signals, metadata, and temporal creation features (`15` extracted features).
-- **Training Dataset:** `twitter_human_bots_dataset.csv` (`37,438` accounts: `25,013` Human / `12,425` Bot — raw CSV excluded from repository).
-- **Architecture:** `log1p` scaling + `StandardScaler` → temporal sequence shaping `(batch_size, seq_len=5, input_size=3)` → 2-layer PyTorch GRU (`hidden_size=64`, `dropout=0.2`) → dense classifier head (`64 → 32 → 2`).
-- **Benchmark Metrics:** `86.61%` accuracy (`Human F1: 0.90`, `Bot F1: 0.80`).
-- **Saved Artifacts:**
-  - `models/saved/bot_rnn_model.pth`
-  - `models/vectorizers/bot_scaler.joblib`
-  - `models/vectorizers/bot_input_meta.joblib`
+```text
+                  Social Media Post
+                          |
+                          v
+                Input Validation
+                          |
+              +-----------+-----------+
+              |                       |
+              v                       v
+       Agent 1                  Agent 2
+    Fake News Detection       Bot Detection
+              |                       |
+              v                       v
+       Fake Probability         Bot Probability
+              |                       |
+              +-----------+-----------+
+                          |
+                          v
+                       Agent 3
+                Decision & Moderation
+                          |
+                          v
+                 Decision Engine
+                          |
+              +-----------+-----------+
+              |           |           |
+              v           v           v
+           APPROVE      REVIEW     RESTRICT
+                          |
+                          v
+                 Human Review Queue
+```
 
----
+### Main Components
 
-## Agent 3 — Decision, Meta-Classifier & Human Review
+1. **Input Validation:** Checks submitted text and account metadata before analysis.
+2. **Detection Agents:** Analyze the content and account characteristics independently.
+3. **Meta-Decision Agent:** Integrates the detection outputs.
+4. **Moderation Engine:** Applies decision policies and safety constraints.
+5. **Human Review Queue:** Stores cases that require manual intervention.
+6. **Streamlit Dashboard:** Provides the user interface.
 
-Agent 3 combines the probability and confidence outputs of frozen Agent 1 and Agent 2 into three moderation actions (`APPROVE`, `REVIEW`, `RESTRICT`) **without conflating bot accounts with fake news**.
+## 4. Intelligent Agents
 
-- **6 Non-Redundant Meta-Features (`src/models/logistic_regression.py`):**
-  `fake_probability`, `bot_probability`, `fake_news_confidence`, `bot_confidence`, `min_agent_confidence`, `threat_interaction`.
-- **Meta-Classifier (`MetaLogisticRegression` + `MetaSupervisorAgent`):**
-  `Pipeline([StandardScaler(), LogisticRegression(...)])` wrapped with 5 deterministic safety guardrails (including uncertainty escalation and preventing `RESTRICT` on legitimate news posted by a bot).
-- **Training Provenance Note:** No human-annotated paired Meta-Dataset exists in the repository yet. The active artifact (`models/saved/meta_logreg_synthetic.joblib`) is a **proof-of-concept** model trained on `5,000` synthetic samples generated from the documented policy in `src/data/synthetic_meta_dataset.py`. Synthetic evaluation metrics must not be presented as real-world human moderation accuracy. Once real cases are annotated using `docs/meta_annotation_template.csv`, retrain via `train_meta_classifier.py`.
-- **Rule-Based Baseline (`SupervisorAgent`):** Preserved intact in `src/moderation/decision_engine.py` alongside `SupervisorPolicy` (`src/moderation/policy.py`).
-- **Human Review Queue (`ReviewQueue`):** Implemented in `src/moderation/human_review.py`; queues `REVIEW` and `RESTRICT` cases and records human dispositions separately while preserving the original AI decision.
+### Agent 1 — Fake News Detection
 
----
+**Objective:** Analyze textual content and estimate whether a submitted statement is potentially fake or real.
 
-## Project Structure
+**Technique:**
+- Multinomial Naive Bayes
+- TF-IDF (Term Frequency–Inverse Document Frequency)
+
+**Workflow:**
+
+1. Receive the submitted text.
+2. Transform the text using the TF-IDF vectorizer.
+3. Pass the resulting representation to the Naive Bayes classifier.
+4. Generate class probabilities.
+5. Return the predicted class and confidence information.
+
+**Outputs:**
+- Fake News Probability
+- Real News Probability
+- Predicted Class
+- Confidence Score
+
+### Agent 2 — Bot Detection
+
+**Objective:** Analyze social media account characteristics to estimate whether an account is human-operated or automated.
+
+**Technique:**
+- GRU (Gated Recurrent Unit)
+- PyTorch
+- StandardScaler
+- Feature Engineering
+
+The agent uses 15 engineered features derived from account metadata and activity information.
+
+**Feature Categories:**
+- Followers and friends statistics.
+- Account activity indicators.
+- Account age.
+- Profile configuration.
+- Verification and geographic settings.
+- Temporal activity information.
+- Username and description characteristics.
+
+**Workflow:**
+
+1. Receive account metadata.
+2. Extract the required features.
+3. Apply the saved scaler.
+4. Pass the feature vector to the GRU model.
+5. Generate bot and human probabilities.
+6. Return the predicted class and confidence score.
+
+**Outputs:**
+- Bot Probability
+- Human Probability
+- Predicted Class
+- Confidence Score
+
+### Agent 3 — Decision & Moderation Agent
+
+**Objective:** Integrate the results of Agent 1 and Agent 2 to determine an appropriate moderation decision.
+
+**Technique:**
+- Logistic Regression
+- Meta-Feature Engineering
+- Multi-class Classification
+
+Agent 3 does not independently analyze the original post. Instead, it uses information produced by the two detection agents.
+
+**Meta-Features:**
+
+1. `fake_probability`
+2. `bot_probability`
+3. `fake_news_confidence`
+4. `bot_confidence`
+5. `min_agent_confidence`
+6. `threat_interaction`
+
+These features represent the individual detection probabilities, their confidence levels, and the interaction between the two threat signals.
+
+**Possible Decisions:**
+
+| Decision | Description |
+|---|---|
+| APPROVE | The content can proceed without additional moderation. |
+| REVIEW | The case requires human verification. |
+| RESTRICT | The case meets the conditions for a restriction decision. |
+
+Agent 3 works alongside moderation guardrails to prevent inappropriate decisions in uncertain or conflicting situations.
+
+## 5. Moderation and Safety Mechanisms
+
+The system does not assume that every bot publishes fake news or that every human account publishes real information.
+
+It distinguishes between:
+
+- Bot + Real News
+- Human + Fake News
+- Bot + Fake News
+- Human + Real News
+
+The moderation system also considers confidence levels and threat interactions.
+
+Additional mechanisms include:
+
+- Confidence-based escalation.
+- Rule-based moderation policies.
+- Human review for uncertain cases.
+- Protection against automatic restriction in conflicting detection scenarios.
+
+A Rule-Based Supervisor is retained as a separate decision baseline.
+
+## 6. Human Review System
+
+The Human Review Queue handles cases requiring human intervention.
+
+It supports:
+
+- Adding cases requiring review.
+- Preserving the outputs of all detection agents.
+- Recording the original AI moderation decision.
+- Allowing a reviewer to resolve a pending case.
+- Keeping the human decision separate from the original AI decision.
+
+This mechanism provides an additional layer of control over automated moderation.
+
+## 7. Project Structure
 
 ```text
 social-threat-intelligence/
+│
 ├── app/
-│   └── streamlit_app.py                  # Interactive 5-page Streamlit dashboard
-├── docs/
-│   ├── meta_annotation_template.csv      # Empty CSV schema template for human annotation
-│   ├── meta_classifier_part3.md          # Agent 3 Meta-Classifier & Meta-Dataset docs
-│   └── supervisor_agent.md               # Rule-based Supervisor & Human Review docs
+│   └── streamlit_app.py
+│
+├── Data/
+│   └── processed/
+│       └── meta_dataset_synthetic.csv
+│
 ├── models/
 │   ├── saved/
-│   │   ├── fake_news_model.joblib        # Agent 1: Multinomial NB weights
-│   │   ├── bot_rnn_model.pth             # Agent 2: PyTorch GRU weights
-│   │   └── meta_logreg_synthetic.joblib  # Agent 3: Meta-Classifier (synthetic POC)
+│   │   ├── fake_news_model.joblib
+│   │   ├── bot_rnn_model.pth
+│   │   └── meta_logreg_synthetic.joblib
+│   │
 │   └── vectorizers/
-│       ├── tfidf_vectorizer.joblib       # Agent 1: TF-IDF vectorizer
-│       ├── bot_scaler.joblib             # Agent 2: StandardScaler (15 features)
-│       └── bot_input_meta.joblib         # Agent 2: Input metadata & feature order
-├── notebooks/
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_data_preprocessing.ipynb
-│   └── 03_model_experiments.ipynb        # Agent 2 GRU experiments & training
-├── reports/
-│   ├── final_system_audit.md             # Full system & UI audit report
-│   ├── final_verification_report.md      # Integrity & scenario verification report
-│   ├── github_release_readiness.md       # Cleanup & GitHub release checklist
-│   └── technical_report.md
+│       ├── tfidf_vectorizer.joblib
+│       ├── bot_scaler.joblib
+│       └── bot_input_meta.joblib
+│
 ├── src/
 │   ├── data/
-│   │   ├── loader.py                     # Raw bot dataset loader (local CSV)
-│   │   ├── preprocessing.py              # Text cleaning & 15 account features
-│   │   ├── meta_dataset.py               # Meta-Dataset validation & schema helpers
-│   │   └── synthetic_meta_dataset.py     # 5,000-row synthetic meta-dataset generator
+│   │   ├── loader.py
+│   │   ├── preprocessing.py
+│   │   ├── meta_dataset.py
+│   │   └── synthetic_meta_dataset.py
+│   │
 │   ├── detection/
-│   │   ├── fake_news_detector.py         # Agent 1 inference module
-│   │   └── bot_detector.py               # Agent 2 inference module
-│   ├── evaluation/
-│   │   ├── compare_models.py             # Rule-based vs Meta-Classifier comparison
-│   │   └── metrics.py                    # Classification metric helpers
+│   │   ├── fake_news_detector.py
+│   │   └── bot_detector.py
+│   │
 │   ├── features/
-│   │   ├── meta_features.py              # Frozen-agent meta-feature extraction
-│   │   ├── temporal_features.py          # GRU sequence builder (seq_len=5)
-│   │   └── text_features.py              # Text feature helpers
+│   │   ├── temporal_features.py
+│   │   └── text_features.py
+│   │
 │   ├── models/
-│   │   ├── logistic_regression.py        # Agent 3 MetaLogisticRegression pipeline
-│   │   ├── naive_bayes.py                # Naive Bayes wrapper
-│   │   └── rnn.py                        # PyTorch BotRNN (GRU) architecture
+│   │   ├── naive_bayes.py
+│   │   ├── rnn.py
+│   │   └── logistic_regression.py
+│   │
 │   ├── moderation/
-│   │   ├── __init__.py
-│   │   ├── decision_engine.py            # Rule-based SupervisorAgent baseline
-│   │   ├── human_review.py               # In-memory ReviewQueue & ReviewCase
-│   │   ├── meta_supervisor.py            # MetaSupervisorAgent + safety guardrails
-│   │   ├── pipeline.py                   # End-to-End SocialThreatPipeline
-│   │   └── policy.py                     # Configurable SupervisorPolicy thresholds
-│   └── utils/
-│       └── helpers.py
+│   │   ├── pipeline.py
+│   │   ├── decision_engine.py
+│   │   └── policy.py
+│   │
+│   └── evaluation/
+│       └── compare_models.py
+│
 ├── tests/
-│   ├── test_agents.py                    # Agent 1 & Agent 2 unit/contract tests
-│   ├── test_end_to_end_pipeline.py       # End-to-End pipeline & validation tests
-│   ├── test_meta_classifier.py           # Agent 3, Meta-Dataset & training tests
-│   ├── test_models.py                    # Preprocessing, GRU & dataset tests
-│   ├── test_preprocessing.py             # Reserved preprocessing test file
-│   ├── test_streamlit_app.py             # Streamlit AppTest UI & E2E tests
-│   └── test_supervisor.py                # Rule-based supervisor & HRQ tests
-├── main.py                               # Agent 1 standalone CLI demo
-├── train_bot_rnn.py                      # Agent 2 training script (requires raw CSV)
-├── train_meta_classifier.py              # Agent 3 training script
-├── requirements.txt                      # Python dependencies
-├── LICENSE
+│   ├── test_agents.py
+│   ├── test_meta_classifier.py
+│   ├── test_end_to_end_pipeline.py
+│   ├── test_supervisor.py
+│   ├── test_models.py
+│   └── test_streamlit_app.py
+│
+├── reports/
+│
+├── train_bot_rnn.py
+├── train_meta_classifier.py
+├── main.py
+├── requirements.txt
 └── README.md
 ```
 
+## 8. Technologies Used
+
+| Technology | Purpose |
+|---|---|
+| Python | Main programming language |
+| Scikit-learn | Traditional machine learning models |
+| PyTorch | GRU-based bot detection |
+| Pandas | Data processing |
+| NumPy | Numerical operations |
+| Streamlit | Interactive dashboard |
+| Joblib | Saving and loading trained models |
+| Pytest | Automated testing |
+| Git & GitHub | Version control |
+
+## 9. Installation and Execution
+
+### Requirements
+
+- Python 3.10 or later, subject to the installed dependency versions.
+- pip
+- Git
+
+### Step 1 — Clone the Repository
+
+```bash
+git clone <REPOSITORY_URL>
+cd social-threat-intelligence
+```
+
+### Step 2 — Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Step 3 — Launch the Dashboard
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+The dashboard will be available at the local URL displayed in the terminal.
+
+### Step 4 — Run the Tests
+
+```bash
+pytest tests/
+```
+
+To run the main integration tests separately:
+
+```bash
+pytest tests/test_end_to_end_pipeline.py
+pytest tests/test_meta_classifier.py
+pytest tests/test_supervisor.py
+pytest tests/test_agents.py
+pytest tests/test_streamlit_app.py
+```
+
+## 10. Dashboard Features
+
+The Streamlit interface provides:
+
+- **Overview Dashboard:** General system status and activity.
+- **Analyze a Post:** Submit text and account metadata for analysis.
+- **Analysis Results:** View the outputs of all three agents and the final moderation decision.
+- **Human Review Queue:** Inspect and resolve pending cases.
+- **System Information:** View system components and operational status.
+
+## 11. Current Implementation Status
+
+The project currently includes:
+
+- Three integrated detection and moderation agents.
+- A complete end-to-end processing pipeline.
+- Input validation for post text and account metadata.
+- Confidence-based moderation guardrails.
+- A rule-based supervisor baseline.
+- A human review queue.
+- A Streamlit dashboard.
+- Automated integration and component tests.
+
+The current implementation is a working proof of concept. Further validation using representative, independently annotated real-world data is required before making production-level performance claims.
+
+## 12. Future Improvements
+
+Potential future development includes:
+
+1. Expand and improve the datasets used by the detection agents.
+2. Evaluate each agent on independent and representative test datasets.
+3. Improve the meta-decision model using independently reviewed moderation examples.
+4. Add multilingual fake news detection.
+5. Improve bot detection using richer behavioral signals.
+6. Introduce explainable AI to show why a moderation decision was made.
+7. Add database persistence for posts, decisions, and review history.
+8. Integrate social media APIs where permitted.
+9. Improve dashboard monitoring and reporting.
+10. Evaluate the system under real-world conditions.
+
+## 13. Project Goal
+
+Social Threat Intelligence aims to provide a modular and extensible multi-agent framework for social media threat analysis.
+
+By combining fake news detection, bot detection, and intelligent moderation, the system provides a unified approach to identifying suspicious content and supporting safer social media environments.
+
 ---
 
-## Installation & Usage
-
-1. **Clone the repository and install dependencies:**
-   ```bash
-   git clone https://github.com/aptalg3ria/social-threat-intelligence.git
-   cd social-threat-intelligence
-   pip install -r requirements.txt
-   ```
-
-2. **Launch the Streamlit Dashboard:**
-   ```bash
-   streamlit run app/streamlit_app.py
-   ```
-
-3. **Run the Agent 1 CLI Demo:**
-   ```bash
-   python main.py
-   ```
-
-4. **Run the Automated Test Suites:**
-   ```bash
-   pytest tests/test_agents.py tests/test_supervisor.py tests/test_end_to_end_pipeline.py tests/test_streamlit_app.py -v
-   ```
-   - To run `tests/test_meta_classifier.py`, generate the local gitignored synthetic dataset first if not already present:
-     ```bash
-     python -m src.data.synthetic_meta_dataset
-     pytest tests/test_meta_classifier.py -v
-     ```
-   - Note: `tests/test_models.py` includes 5 dataset-loading tests that require placing `twitter_human_bots_dataset.csv` in the project root (not included in the repository).
-
-5. **Train Agent 3 on Human-Annotated Data (Optional Future Step):**
-   ```bash
-   python train_meta_classifier.py --input Data/processed/meta_dataset_labeled.csv
-   ```
-
----
-
-## Academic Project
-
-Developed as part of a university project in Software Engineering / Data Intelligence.
+**Project:** Social Threat Intelligence  
+**Architecture:** Multi-Agent Machine Learning System  
+**Interface:** Streamlit  
+**Language:** Python
